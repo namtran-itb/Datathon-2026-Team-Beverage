@@ -205,3 +205,22 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Môi trường ảo
+.venv/
+venv/
+env/
+
+# Cấu hình PyCharm
+.idea/
+
+# File rác của Python
+__pycache__/
+*.pyc
+
+# File cấu hình chứa mật khẩu nhạy cảm
+.env
+
+# Dữ liệu lớn
+data/
+*.csv
