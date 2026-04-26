@@ -220,7 +220,3 @@ __pycache__/
 
 # File cấu hình chứa mật khẩu nhạy cảm
 .env
-
-# Dữ liệu lớn
-data/
-*.csv
