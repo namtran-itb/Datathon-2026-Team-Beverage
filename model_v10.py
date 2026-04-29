@@ -6,7 +6,8 @@ Phiên bản tạo file submission_v10.csv
 """
 import os, sys, warnings
 import numpy as np, pandas as pd
-import xgboost as xgb, lightgbm as lgb
+import xgboost as xgb
+import lightgbm as lgb
 import matplotlib; matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
@@ -48,6 +49,36 @@ def load_data():
     sample = pd.read_csv(DATA_DIR+'sample_submission.csv', parse_dates=['Date'])
     return sales, promos, sample
 
+def get_discount(ngay_check, df_promo):
+    # Đưa về bộ (tháng, ngày)
+    ngay_check = pd.to_datetime(ngay_check)
+    curr = (ngay_check.month, ngay_check.day)
+    is_odd_year = ngay_check.year % 2 == 1
+
+    count_promo = 0
+    sum_discount = 0
+    
+    for _, row in df_promo.iterrows():
+        if row['odd'] == True and not is_odd_year: continue
+
+        start = (row['start_date'].month, row['start_date'].day)
+        end = (row['end_date'].month, row['end_date'].day)
+
+        is_in_range = False
+        
+        # Xử lý trường hợp vắt qua năm mới (vd: 25/12 - 05/01)
+        if start <= end:
+            if start <= curr <= end:
+                is_in_range = True
+        else: # Trường hợp vắt năm
+            if curr >= start or curr <= end:
+                is_in_range = True
+
+        if is_in_range:
+            count_promo += 1
+            sum_discount += row['discount_value']
+    return count_promo, sum_discount
+
 
 def build_features(df, promos):
     # Tạo các đặc trưng thời gian cơ bản
@@ -82,21 +113,19 @@ def build_features(df, promos):
     df['pre_tet'] = np.where(df['dt_tet'] < 30, np.exp(-df['dt_tet'] / 10), 0)
 
     # Xử lý khuyến mãi
-    df['promo'] = 0
-    df['discount'] = 0.0
-    for _, row in promos.dropna(subset=['start_date', 'end_date']).iterrows():
-        m = (df['Date'] >= row['start_date']) & (df['Date'] <= row['end_date'])
-        df.loc[m, 'promo'] += 1
-        if pd.notnull(row.get('discount_value')):
-            df.loc[m, 'discount'] = np.maximum(df.loc[m, 'discount'], float(row['discount_value']))
+    promos['start_date'] = pd.to_datetime(promos['start_date'])
+    promos['end_date'] = pd.to_datetime(promos['end_date'])
 
-    # Bổ sung sự kiện khuyến mãi mặc định cho 2023-2024
-    for yr in [2023, 2024]:
-        for s, e, d in [(f'{yr}-03-18', f'{yr}-04-17', 12), (f'{yr}-06-23', f'{yr}-07-22', 18),
-                        (f'{yr}-08-30', f'{yr}-10-01', 10), (f'{yr}-11-18', f'{yr}-12-31', 20)]:
-            m = (df['Date'] >= pd.Timestamp(s)) & (df['Date'] <= pd.Timestamp(e))
-            df.loc[m, 'promo'] = np.maximum(df.loc[m, 'promo'], 1)
-            df.loc[m, 'discount'] = np.maximum(df.loc[m, 'discount'], d)
+    promos['promo_name'] = promos['promo_name'].str.replace(r'\d+', '', regex=True)
+    promos['odd'] = promos['promo_name'].str.strip().isin(['Rural Special', 'Urban Blowout'])
+
+    # 2. Lấy quy luật cố định (Ngày, Tháng) từ lần xuất hiện gần nhất của mỗi đợt sale
+    # Ta dùng .drop_duplicates để mỗi loại promo chỉ xuất hiện 1 dòng đại diện
+    templates = promos.sort_values('start_date').drop_duplicates('promo_name', keep='last').copy()
+    templates.head(10)
+
+    promo = templates[['promo_name', 'start_date', 'end_date', 'discount_value', 'odd']]
+    df[['promo', 'discount']] = df['Date'].apply(lambda x: pd.Series(get_discount(x, promo)))
     return df
 
 
@@ -239,7 +268,7 @@ def make_submission(sales, promos, sample,
     df = build_features(df, promos)
     train_sub = df[df['Date'] <= TRAIN_END].dropna(subset=['Revenue']).copy()
 
-    df = build_decomposition_v10(df, train_sub, cagr_h1_23, cagr_h2_23, cagr_h1_24, cagr_h2_24)
+    df = build_decomposition_v10_with_stl(df, train_sub)
 
     tr_df = df[df['Date'] <= TRAIN_END].dropna(subset=['log_rev_ratio'])
     te_df = df[(df['Date'] >= TEST_START) & (df['Date'] <= TEST_END)].copy()
@@ -271,7 +300,7 @@ def make_submission(sales, promos, sample,
     sub['Date'] = sub['Date'].dt.strftime('%Y-%m-%d')
 
     # Ghi file với tên mới là submission_v10.csv
-    fn = 'submission_v10.csv'
+    fn = 'submission_k4.csv'
     sub.to_csv(os.path.join(OUTPUT_DIR, fn), index=False)
 
     margin = ((sub.Revenue - sub.COGS) / sub.Revenue * 100)
