@@ -10,6 +10,7 @@ import xgboost as xgb
 import lightgbm as lgb
 import matplotlib; matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from statsmodels.tsa.seasonal import STL
 
 warnings.filterwarnings('ignore')
 if sys.stdout.encoding != 'utf-8':
@@ -91,6 +92,18 @@ def build_features(df, promos):
     df['is_weekend'] = (df['dayofweek'] >= 5).astype(int)
     df['is_payday'] = df['day'].isin([1,2,5,15,25,30]).astype(int)
 
+    # Lag features
+    for lag in [7, 14, 28, 364]:
+        df[f'rev_lag_{lag}']  = df['Revenue'].shift(lag)
+        df[f'cogs_lag_{lag}'] = df['COGS'].shift(lag)
+
+    for w in [7, 14, 30]:
+        df[f'rev_roll_mean_{w}'] = df['Revenue'].shift(1).rolling(w, min_periods=1).mean()
+        df[f'rev_roll_std_{w}']  = df['Revenue'].shift(1).rolling(w, min_periods=1).std().fillna(0)
+
+    df['quarter'] = df['month'].map({1:1,2:1,3:1, 4:2,5:2,6:2,
+                                    7:3,8:3,9:3, 10:4,11:4,12:4})
+
     # Ngày lễ Việt Nam
     vn_hol = [(1,1),(4,30),(5,1),(9,2),(12,25),(12,31)]
     df['is_holiday'] = df.apply(lambda x: 1 if (int(x.month), int(x.day)) in vn_hol else 0, axis=1)
@@ -126,6 +139,7 @@ def build_features(df, promos):
 
     promo = templates[['promo_name', 'start_date', 'end_date', 'discount_value', 'odd']]
     df[['promo', 'discount']] = df['Date'].apply(lambda x: pd.Series(get_discount(x, promo)))
+    
     return df
 
 
@@ -216,13 +230,13 @@ def train_with_cogs_ratio(tr_df, te_df):
 
     # Cấu hình Ensemble dự đoán Revenue
     configs_rev = [
-        ('XGB1', xgb.XGBRegressor, dict(n_estimators=1000, learning_rate=0.025, max_depth=3,
+        ('XGB1', xgb.XGBRegressor, dict(n_estimators=1000, learning_rate=0.025, max_depth=3, objective='reg:pseudohubererror',
             subsample=0.8, colsample_bytree=0.8, min_child_weight=10,
             reg_alpha=0.1, reg_lambda=1.0, random_state=42, verbosity=0)),
         ('LGB', lgb.LGBMRegressor, dict(n_estimators=1000, learning_rate=0.025, max_depth=4, num_leaves=31,
             subsample=0.8, colsample_bytree=0.8, min_child_samples=30,
             reg_alpha=0.2, reg_lambda=1.0, random_state=42, verbose=-1)),
-        ('XGB2', xgb.XGBRegressor, dict(n_estimators=1200, learning_rate=0.02, max_depth=4,
+        ('XGB2', xgb.XGBRegressor, dict(n_estimators=1200, learning_rate=0.02, max_depth=4, objective='reg:pseudohubererror',
             subsample=0.75, colsample_bytree=0.75, min_child_weight=15,
             reg_alpha=0.2, reg_lambda=2.0, random_state=99, verbosity=0)),
     ]
@@ -268,7 +282,7 @@ def make_submission(sales, promos, sample,
     df = build_features(df, promos)
     train_sub = df[df['Date'] <= TRAIN_END].dropna(subset=['Revenue']).copy()
 
-    df = build_decomposition_v10_with_stl(df, train_sub)
+    df = build_decomposition_v10(df, train_sub, cagr_h1_23, cagr_h2_23, cagr_h1_24, cagr_h2_24)
 
     tr_df = df[df['Date'] <= TRAIN_END].dropna(subset=['log_rev_ratio'])
     te_df = df[(df['Date'] >= TEST_START) & (df['Date'] <= TEST_END)].copy()
@@ -288,8 +302,20 @@ def make_submission(sales, promos, sample,
     else:
         te_df['COGS'] = cogs_independent
 
-    # Áp dụng ràng buộc nghiệp vụ (COGS phải nhỏ hơn Revenue)
-    te_df.loc[te_df['COGS'] >= te_df['Revenue'], 'COGS'] = te_df.loc[te_df['COGS'] >= te_df['Revenue'], 'Revenue'] * 0.88
+    # Tính margin band từ train data theo từng tháng
+    monthly_margin = train_sub.copy()
+    monthly_margin['margin'] = monthly_margin['COGS'] / (monthly_margin['Revenue'] + 1e-6)
+    margin_bounds = monthly_margin.groupby('month')['margin'].quantile([0.05, 0.95]).unstack()
+
+    # Áp lên test
+    for m in range(1, 13):
+        mask = te_df['month'] == m
+        lo = margin_bounds.loc[m, 0.05] if m in margin_bounds.index else 0.65
+        hi = margin_bounds.loc[m, 0.95] if m in margin_bounds.index else 0.93
+        te_df.loc[mask, 'COGS'] = te_df.loc[mask, 'COGS'].clip(
+            te_df.loc[mask, 'Revenue'] * lo,
+            te_df.loc[mask, 'Revenue'] * hi
+        )
 
     te_df['Revenue'] = te_df['Revenue'].clip(lower=0).round(2)
     te_df['COGS'] = te_df['COGS'].clip(lower=0).round(2)
@@ -300,7 +326,7 @@ def make_submission(sales, promos, sample,
     sub['Date'] = sub['Date'].dt.strftime('%Y-%m-%d')
 
     # Ghi file với tên mới là submission_v10.csv
-    fn = 'submission_k4.csv'
+    fn = 'submission_k7.csv'
     sub.to_csv(os.path.join(OUTPUT_DIR, fn), index=False)
 
     margin = ((sub.Revenue - sub.COGS) / sub.Revenue * 100)
