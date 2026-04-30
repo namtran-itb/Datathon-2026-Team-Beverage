@@ -43,9 +43,10 @@ customers = pd.read_csv(os.path.join(DATA_DIR, "customers.csv"))
 geography = pd.read_csv(os.path.join(DATA_DIR, "geography.csv"))
 
 # Chỉ lấy các cột cần thiết từ geography (city đã có trong customers)
-geo_cols = geography[["zip", "region", "district"]]
-
+geo_cols = geography[["zip", "region", "district"]].drop_duplicates(subset=["zip"])
+assert geo_cols["zip"].is_unique, "Lỗi nghiêm trọng: geo_cols vẫn còn duplicate zip!"
 dim_customers = customers.merge(geo_cols, on="zip", how="left")
+dim_customers = dim_customers.drop_duplicates(subset=["customer_id"])
 
 dim_customers.to_csv(os.path.join(OUTPUT_DIR, "dim_customers.csv"), index=False)
 print(f"    dim_customers : {len(dim_customers):>7,} rows | {list(dim_customers.columns)}")
@@ -58,6 +59,10 @@ print(f"    dim_customers : {len(dim_customers):>7,} rows | {list(dim_customers.
 # ─────────────────────────────────────────────
 print("\n🛒 [3/4] Building fact_transactions ...")
 
+orders = pd.read_csv(os.path.join(DATA_DIR, "orders.csv"))
+orders = orders.drop_duplicates(subset=["order_id"])
+assert orders["order_id"].is_unique, "Lỗi: orders.csv có order_id bị trùng lặp!"
+
 order_items = pd.read_csv(
     os.path.join(DATA_DIR, "order_items.csv"),
     dtype={"promo_id": str, "promo_id_2": str},
@@ -67,6 +72,26 @@ payments  = pd.read_csv(os.path.join(DATA_DIR, "payments.csv"))
 shipments = pd.read_csv(os.path.join(DATA_DIR, "shipments.csv"))
 returns   = pd.read_csv(os.path.join(DATA_DIR, "returns.csv"))
 reviews   = pd.read_csv(os.path.join(DATA_DIR, "reviews.csv"))
+
+# Gom nhóm payments tránh đẻ dòng
+payments_agg = payments.groupby("order_id", as_index=False).agg(
+    # Nếu khách quẹt 2 thẻ, nối tên lại thay vì lấy first
+    payment_method = ("payment_method", lambda x: ', '.join(x.dropna().astype(str).unique())),
+    total_payment  = ("payment_value", "sum")
+)
+assert payments_agg["order_id"].is_unique, "Lỗi: payments_agg bị duplicate order_id!"
+
+# Gom nhóm shipments tránh đẻ dòng
+shipments_agg = (
+    shipments
+    .sort_values(["order_id", "ship_date"], ascending=[True, False]) # Sort để lấy ngày mới nhất
+    .groupby("order_id", as_index=False)
+    .agg(
+        ship_date      = ("ship_date", "first"),
+        shipping_fee   = ("shipping_fee", "sum")
+    )
+)
+assert shipments_agg["order_id"].is_unique, "Lỗi: shipments_agg bị duplicate order_id!"
 
 # Aggregate returns → grain (order_id, product_id)
 returns_agg = (
@@ -87,18 +112,19 @@ reviews_agg = (
     reviews
     .groupby(["order_id", "product_id"], as_index=False)
     .agg(
-        customer_id  = ("customer_id",  "first"),
         review_date  = ("review_date",  "first"),
         rating       = ("rating",       "mean"),
-        review_title = ("review_title", "first"),
+        review_title = ("review_title", lambda x: ', '.join(x.dropna().astype(str).unique())),
     )
 )
+assert reviews_agg.duplicated(subset=["order_id", "product_id"]).sum() == 0, "Lỗi: reviews_agg bị duplicate grain!"
 
 # Build fact_transactions
 fact_transactions = (
     order_items
-    .merge(payments,   on="order_id",              how="left")
-    .merge(shipments,  on="order_id",              how="left")
+    .merge(orders[['order_id', 'customer_id', 'order_date']], on="order_id", how="left") # Thêm dòng này cực quan trọng
+    .merge(payments_agg,   on="order_id",              how="left")
+    .merge(shipments_agg,  on="order_id",              how="left")
     .merge(returns_agg, on=["order_id", "product_id"], how="left")
     .merge(reviews_agg, on=["order_id", "product_id"], how="left")
 )
@@ -120,7 +146,14 @@ sales       = pd.read_csv(os.path.join(DATA_DIR, "sales.csv"), parse_dates=["Dat
 web_traffic = pd.read_csv(os.path.join(DATA_DIR, "web_traffic.csv"), parse_dates=["date"])
 inventory   = pd.read_csv(os.path.join(DATA_DIR, "inventory.csv"))
 
+# Cắt bỏ phần giờ phút giây để đảm bảo merge khớp 100%
+sales["Date"] = sales["Date"].dt.normalize()
 web_traffic = web_traffic.rename(columns={"date": "Date"})
+web_traffic["Date"] = web_traffic["Date"].dt.normalize()
+
+# Aggregate web_traffic đề phòng 1 ngày có nhiều dòng (theo device/channel)
+metrics_cols = [col for col in web_traffic.select_dtypes(include='number').columns if not col.endswith('_id')]
+web_traffic_agg = web_traffic.groupby("Date", as_index=False)[metrics_cols].sum()
 
 # Aggregate inventory → monthly grain
 inv_monthly = (
@@ -144,7 +177,7 @@ sales["year"]  = sales["Date"].dt.year
 sales["month"] = sales["Date"].dt.month
 
 # Merge sales + web_traffic (daily)
-fact_ops = sales.merge(web_traffic, on="Date", how="left")
+fact_ops = sales.merge(web_traffic_agg, on="Date", how="left")
 
 # Merge inventory (monthly)
 fact_ops = fact_ops.merge(inv_monthly, on=["year", "month"], how="left")
