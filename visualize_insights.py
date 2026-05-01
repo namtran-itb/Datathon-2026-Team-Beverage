@@ -4,20 +4,19 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 
-# ─── Đường dẫn ──────────────────────────────────────────────────────────────
+# thư mục xuất ảnh — tự tạo nếu chưa có
 OUTPUT_DIR = Path(__file__).parent / "visualization"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-# ─── Bảng màu ───────────────────────────────────────────────────────────────
-RED   = "#E24B4A"
-AMBER = "#EF9F27"
-GRAY  = "#B4B2A9"
-DARK  = "#2C2C2A"
-LIGHT = "#F1EFE8"
-GREEN = "#5BAD72"
+# bảng màu dùng chung cho cả 3 biểu đồ
+RED   = "#E24B4A"    # nguy hiểm / cần chú ý
+AMBER = "#EF9F27"    # cảnh báo
+GRAY  = "#B4B2A9"    # bình thường
+DARK  = "#2C2C2A"    # chữ, viền
+LIGHT = "#F1EFE8"    # nền nhạt
+GREEN = "#5BAD72"    # tích cực
 
-# ─── Global style ───────────────────────────────────────────────────────────
-# Đã TĂNG toàn bộ kích thước chữ mặc định
+# cấu hình font chung — cỡ lớn để in vào báo cáo PDF cho dễ đọc
 plt.rcParams.update({
     "font.family": "DejaVu Sans",
     "font.size": 22,
@@ -37,17 +36,18 @@ plt.rcParams.update({
 
 
 def save_fig(fig, filename):
+    """Căn chỉnh layout rồi lưu ảnh PNG."""
     out = OUTPUT_DIR / filename
-    # GIẢM khoảng trắng phía trên: tăng rect top từ 0.90 lên 0.92
     fig.tight_layout(rect=[0, 0.02, 1, 0.92], h_pad=4, w_pad=6)
     fig.savefig(out, dpi=250, bbox_inches="tight")
     plt.close(fig)
     print(f"  ✓ Đã lưu → visualization/{filename}")
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# INSIGHT 1 — Giảm giá ăn mòn biên lợi nhuận, không khuấy được hàng
-# ═════════════════════════════════════════════════════════════════════════════
+# =====================================================================
+# INSIGHT 1: Giảm giá ăn mòn biên lợi nhuận, sell-through không tăng
+# Nguồn: tổng hợp từ bảng fact_transactions + inventory
+# =====================================================================
 print("Đang vẽ Insight 1...")
 
 channels     = ["Trực tuyến", "Mạng xã hội", "Tất cả kênh", "Tại cửa hàng", "Email"]
@@ -58,17 +58,17 @@ segments       = ["Everyday", "Trendy", "Balanced", "Performance", "Activewear",
                   "All-weather", "Premium", "Standard"]
 base_margins   = [23.6, 24.1, 25.8, 26.4, 26.6, 28.4, 28.5, 31.3]
 disc_rate      = 20.0
-# Công thức đúng: margin sau giảm giá = (margin_gốc - discount) / (100 - discount) * 100
-# VD: Everyday 23.6% margin, giảm 20% → (23.6-20)/(100-20)*100 = 4.5%
+# tính margin thực tế sau khi áp discount lên giá bán
+# ví dụ: Everyday margin gốc 23.6%, giảm 20% → margin còn (23.6-20)/80*100 = 4.5%
 effective_margins = [round((b - disc_rate) / (100 - disc_rate) * 100, 1) for b in base_margins]
 
 fig1, axes1 = plt.subplots(1, 2, figsize=(28, 12))
 fig1.subplots_adjust(wspace=0.5)
-# GIẢM khoảng trắng: chỉnh y=0.96 và tăng fontsize=40
+
 fig1.suptitle("GIẢM GIÁ ĂN MÒN BIÊN LỢI NHUẬN,\nKHÔNG KHUẤY ĐƯỢC HÀNG",
               fontsize=40, fontweight="bold", y=0.96)
 
-# ── 1A: Giảm giá vs Tỷ lệ bán hàng theo kênh ───────────────────────────────
+# --- 1A: so sánh mức giảm giá TB và tỷ lệ bán hàng theo kênh ---
 ax1a = axes1[0]
 x     = np.arange(len(channels))
 width = 0.35
@@ -92,11 +92,10 @@ ax1a.set_xticks(x)
 ax1a.set_xticklabels(channels, fontsize=24, rotation=15, ha="right")
 ax1a.set_ylabel("Tỷ lệ (%)", fontsize=26)
 ax1a.set_ylim(0, 44)
-# GIẢM khoảng trắng: chỉnh pad=10, tăng fontsize=32
 ax1a.set_title("1A · Giảm giá theo kênh —\ntỷ lệ bán hàng không tăng", fontsize=32, fontweight="bold", pad=10)
 ax1a.legend(loc="upper right", fontsize=22)
 
-# ── 1B: Biên lợi nhuận trước & sau giảm giá 20% ────────────────────────────
+# --- 1B: biên lợi nhuận gốc vs. sau khi giảm 20% theo từng phân khúc ---
 ax1b = axes1[1]
 x1b  = np.arange(len(segments))
 width1 = 0.38
@@ -120,16 +119,16 @@ ax1b.set_xticks(x1b)
 ax1b.set_xticklabels(segments, rotation=35, ha="right", fontsize=24)
 ax1b.set_ylabel("Biên lợi nhuận (%)", fontsize=26)
 ax1b.set_ylim(-2, 46)
-# GIẢM khoảng trắng: chỉnh pad=10, tăng fontsize=32
 ax1b.set_title("1B · Biên lợi nhuận trước & sau\ngiảm 20% theo phân khúc", fontsize=32, fontweight="bold", pad=10)
 ax1b.legend(loc="upper left", fontsize=22)
 
 save_fig(fig1, "insight1.png")
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# INSIGHT 2 — Vốn đông kết trong hàng tồn kho đóng băng
-# ═════════════════════════════════════════════════════════════════════════════
+# =====================================================================
+# INSIGHT 2: 76% vốn đông kết trong tồn kho, phân bổ ngược nhu cầu
+# Nguồn: inventory + dim_customers
+# =====================================================================
 print("Đang vẽ Insight 2...")
 
 categories  = ["Streetwear", "Outdoor", "Casual", "GenZ"]
@@ -148,11 +147,11 @@ implied_inv   = [30.0, 35.0, 35.0]
 
 fig2, axes2 = plt.subplots(1, 3, figsize=(36, 12))
 fig2.subplots_adjust(wspace=0.55)
-# GIẢM khoảng trắng: chỉnh y=0.96 và tăng fontsize=40
+
 fig2.suptitle("VỐN ĐÔNG KẾT TRONG HÀNG\nTỒN KHO ĐÓNG BĂNG",
               fontsize=40, fontweight="bold", y=0.96)
 
-# ── 2A: Phân phối giá trị danh mục ──────────────────────────────────────────
+# --- 2A: donut chart phân bổ giá trị theo danh mục ---
 ax2a, ax2b, ax2c = axes2
 
 # Donut
@@ -166,12 +165,11 @@ for at, val in zip(autotexts, value_pct):
     at.set_color("white" if val > 10 else DARK)
 ax2a.legend(wedges, [f"{c} ({v}%)" for c, v in zip(categories, value_pct)],
             loc="lower center", bbox_to_anchor=(0.5, -0.22), fontsize=22, ncol=2)
-# GIẢM khoảng trắng: chỉnh pad=10, tăng fontsize=32
 ax2a.set_title("2A · Phân phối giá trị\ndanh mục sản phẩm", fontsize=32, fontweight="bold", pad=10)
 ax2a.text(0, 0, "75.1%\nStreet-\nwear", ha="center", va="center",
           fontsize=26, fontweight="bold", color=RED)
 
-# Stacked bar: vốn đông kết vs đã bán
+# --- 2B: stacked bar — phần vốn bị kẹt vs. đã bán ra ---
 x2 = np.arange(len(categories2))
 ax2b.bar(x2, locked_val, color=RED, label="Vốn đông kết (chưa bán)", zorder=3)
 ax2b.bar(x2, sold_val, bottom=locked_val, color=GREEN,
@@ -179,7 +177,7 @@ ax2b.bar(x2, sold_val, bottom=locked_val, color=GREEN,
 for i, (l, s) in enumerate(zip(locked_val, sold_val)):
     ax2b.text(i, l / 2, f"{l}%", ha="center", va="center", fontsize=22,
               color="white", fontweight="bold")
-    # Đặt text phía trên thanh nếu segment sold quá mỏng để tránh tràn
+    # nếu phần sold quá mỏng thì đặt số liệu phía trên thanh cho khỏi tràn
     if s > 10:
         ax2b.text(i, l + s / 2, f"{s}%", ha="center", va="center", fontsize=20, color=DARK)
     else:
@@ -187,11 +185,10 @@ for i, (l, s) in enumerate(zip(locked_val, sold_val)):
 ax2b.set_xticks(x2)
 ax2b.set_xticklabels(categories2, rotation=25, ha="right", fontsize=24)
 ax2b.set_ylabel("% Giá trị danh mục", fontsize=26)
-# GIẢM khoảng trắng: chỉnh pad=10, tăng fontsize=32
 ax2b.set_title("2B · Vốn đông kết và đã bán\ntheo phân khúc", fontsize=32, fontweight="bold", pad=10)
 ax2b.legend(fontsize=22, loc="upper right")
 
-# ── 2C: Khách hàng theo vùng vs tồn kho ước tính ──────────────────────────
+# --- 2C: so sánh % khách hàng thực tế vs. % tồn kho ước tính theo vùng ---
 x3    = np.arange(len(regions))
 width = 0.38
 
@@ -211,16 +208,16 @@ ax2c.set_xticks(x3)
 ax2c.set_xticklabels(regions, fontsize=24)
 ax2c.set_ylabel("% Phân bổ", fontsize=26)
 ax2c.set_ylim(0, 68)
-# GIẢM khoảng trắng: chỉnh pad=10, tăng fontsize=32
 ax2c.set_title("2C · Khách hàng miền Đông cao —\ntồn kho phân bổ ngược chiều", fontsize=32, fontweight="bold", pad=10)
 ax2c.legend(fontsize=22)
 
 save_fig(fig2, "insight2.png")
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# INSIGHT 3 — 322 SKU hết hàng, hệ thống không bổ sung tồn kho
-# ═════════════════════════════════════════════════════════════════════════════
+# =====================================================================
+# INSIGHT 3: 322 SKU hết hàng, reorder trigger = 0
+# Nguồn: inventory (stockout_flag) + web_traffic
+# =====================================================================
 print("Đang vẽ Insight 3...")
 
 seg_names   = ["Balanced", "Everyday", "Performance", "All-weather",
@@ -240,24 +237,23 @@ cust_pct2  = [29.9, 20.1, 19.9, 12.0, 10.1, 8.0]
 
 fig3, axes3 = plt.subplots(1, 2, figsize=(28, 12))
 fig3.subplots_adjust(wspace=0.55)
-# GIẢM khoảng trắng: chỉnh y=0.96 và tăng fontsize=40
+
 fig3.suptitle("HỆ THỐNG KHÔNG BỔ SUNG TỒN KHO",
               fontsize=40, fontweight="bold", y=0.96)
 
-# ── 3A: Giá trị biên LN mất trên mỗi SKU hết hàng ─────────────────────────
+# --- 3A: margin bị mất trên mỗi SKU hết hàng, xếp theo phân khúc ---
 ax3a = axes3[0]
 bars = ax3a.barh(seg_s[::-1], rev_s[::-1], color=colors10[::-1], zorder=3, height=0.6)
 for bar, val in zip(bars, rev_s[::-1]):
     ax3a.text(val + 60, bar.get_y() + bar.get_height() / 2,
               f"{val:,} VND", va="center", fontsize=22, color=DARK)
 ax3a.set_xlabel("Giá trị biên lợi nhuận mất trên mỗi SKU hết hàng (VND)", fontsize=26)
-# GIẢM khoảng trắng: chỉnh pad=10, tăng fontsize=32
 ax3a.set_title("3A · Rủi ro doanh thu theo\nphân khúc khi hết hàng", fontsize=32, fontweight="bold", pad=10)
 ax3a.set_xlim(0, 3600)
 ax3a.axvline(1800, color=RED, linestyle=":", linewidth=1.5)
 ax3a.tick_params(axis='y', labelsize=24)
 
-# ── 3B: Khách hàng theo kênh thu hút vs phản hồi bổ sung = 0 ───────────────
+# --- 3B: % khách theo kênh thu hút — đối lập với reorder = 0 ---
 ax3b = axes3[1]
 x4    = np.arange(len(channels2))
 width = 0.45
@@ -270,7 +266,7 @@ for bar, val in zip(b_cust, cust_pct2):
     ax3b.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 1.0,
               f"{val}%", ha="center", fontsize=22, fontweight="bold", color=DARK)
 
-# Dòng phản hồi bổ sung = 0 — hiển thị ở đáy cột
+# đường nằm ngang ở y=0 thể hiện hệ thống không hề kích hoạt reorder
 ax3b.axhline(0, color=DARK, linestyle="-", linewidth=3, zorder=4, alpha=0.8,
              label="Phản hồi bổ sung tồn kho = 0")
 
@@ -278,7 +274,6 @@ ax3b.set_xticks(x4)
 ax3b.set_xticklabels(channels2, rotation=30, ha="right", fontsize=24)
 ax3b.set_ylabel("% Khách hàng", fontsize=26)
 ax3b.set_ylim(0, 45)
-# GIẢM khoảng trắng: chỉnh pad=10, tăng fontsize=32
 ax3b.set_title("3B · Khách hàng theo kênh thu hút —\nkhông có phản hồi bổ sung", fontsize=32, fontweight="bold", pad=10)
 ax3b.legend(fontsize=22, loc="upper right")
 
