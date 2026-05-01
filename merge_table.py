@@ -17,6 +17,39 @@ OUTPUT_DIR = "merge_table"        # Thư mục lưu output
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+def safe_merge_with_validation(left_df, right_df, on_cols, how='left', table_name=''):
+    """Merge với validation và logging"""
+    print(f"    📊 Merging {table_name}...")
+    
+    # Check duplicates in key columns
+    left_keys = left_df[on_cols].duplicated().sum()
+    right_keys = right_df[on_cols].duplicated().sum()
+    
+    if left_keys > 0:
+        print(f"      ⚠️ Left có {left_keys} duplicate keys")
+    if right_keys > 0:
+        print(f"      ⚠️ Right có {right_keys} duplicate keys")
+    
+    # Count before merge
+    before_count = len(left_df)
+    
+    # Merge
+    result = left_df.merge(right_df, on=on_cols, how=how, validate='many_to_one' if how == 'left' else None)
+    
+    # Count after merge and report
+    after_count = len(result)
+    match_rate = (after_count / before_count) * 100 if before_count > 0 else 0
+    
+    print(f"      ✓ Rows: {before_count} → {after_count} ({match_rate:.1f}% match)")
+    
+    # Check for unmatched rows in left join
+    if how == 'left':
+        unmatched = before_count - result.dropna(subset=[c for c in right_df.columns if c not in on_cols]).shape[0]
+        if unmatched > 0:
+            print(f"      ⚠️ {unmatched} rows không match với {table_name}")
+    
+    return result
+
 # ─────────────────────────────────────────────
 # TABLE 1: dim_products  (giữ nguyên products.csv)
 # promotions gộp vào đây vì được reference từ transactions
@@ -25,6 +58,15 @@ print("📦 [1/4] Building dim_products ...")
 
 products   = pd.read_csv(os.path.join(DATA_DIR, "products.csv"))
 promotions = pd.read_csv(os.path.join(DATA_DIR, "promotions.csv"))
+
+# Validate unique keys
+if products["product_id"].duplicated().sum() > 0:
+    print(f"      ⚠️ Found {products['product_id'].duplicated().sum()} duplicate product_ids")
+    products = products.drop_duplicates(subset=["product_id"])
+
+if promotions["promo_id"].duplicated().sum() > 0:
+    print(f"      ⚠️ Found {promotions['promo_id'].duplicated().sum()} duplicate promo_ids")
+    promotions = promotions.drop_duplicates(subset=["promo_id"])
 
 products.to_csv(os.path.join(OUTPUT_DIR, "dim_products.csv"), index=False)
 promotions.to_csv(os.path.join(OUTPUT_DIR, "dim_promotions.csv"), index=False)
@@ -44,9 +86,21 @@ geography = pd.read_csv(os.path.join(DATA_DIR, "geography.csv"))
 
 # Chỉ lấy các cột cần thiết từ geography (city đã có trong customers)
 geo_cols = geography[["zip", "region", "district"]].drop_duplicates(subset=["zip"])
-assert geo_cols["zip"].is_unique, "Lỗi nghiêm trọng: geo_cols vẫn còn duplicate zip!"
-dim_customers = customers.merge(geo_cols, on="zip", how="left")
-dim_customers = dim_customers.drop_duplicates(subset=["customer_id"])
+
+# Validate zip uniqueness
+zip_duplicates = geo_cols["zip"].duplicated().sum()
+if zip_duplicates > 0:
+    print(f"      ⚠️ Found {zip_duplicates} duplicate zip codes in geography")
+    geo_cols = geo_cols.drop_duplicates(subset=["zip"], keep='first')
+
+dim_customers = safe_merge_with_validation(
+    customers, geo_cols, ["zip"], how='left', table_name='geography'
+)
+
+# Validate customer uniqueness
+if dim_customers["customer_id"].duplicated().sum() > 0:
+    print(f"      ⚠️ Found {dim_customers['customer_id'].duplicated().sum()} duplicate customer_ids")
+    dim_customers = dim_customers.drop_duplicates(subset=["customer_id"])
 
 dim_customers.to_csv(os.path.join(OUTPUT_DIR, "dim_customers.csv"), index=False)
 print(f"    dim_customers : {len(dim_customers):>7,} rows | {list(dim_customers.columns)}")
@@ -60,8 +114,14 @@ print(f"    dim_customers : {len(dim_customers):>7,} rows | {list(dim_customers.
 print("\n🛒 [3/4] Building fact_transactions ...")
 
 orders = pd.read_csv(os.path.join(DATA_DIR, "orders.csv"))
-orders = orders.drop_duplicates(subset=["order_id"])
-assert orders["order_id"].is_unique, "Lỗi: orders.csv có order_id bị trùng lặp!"
+
+# Validate and fix order_id uniqueness
+order_duplicates = orders["order_id"].duplicated().sum()
+if order_duplicates > 0:
+    print(f"      ⚠️ Found {order_duplicates} duplicate order_ids in orders")
+    orders = orders.drop_duplicates(subset=["order_id"], keep='first')
+
+print(f"      📋 Orders: {len(orders)} unique orders")
 
 order_items = pd.read_csv(
     os.path.join(DATA_DIR, "order_items.csv"),
@@ -76,10 +136,15 @@ reviews   = pd.read_csv(os.path.join(DATA_DIR, "reviews.csv"))
 # Gom nhóm payments tránh đẻ dòng
 payments_agg = payments.groupby("order_id", as_index=False).agg(
     # Nếu khách quẹt 2 thẻ, nối tên lại thay vì lấy first
-    payment_method = ("payment_method", lambda x: ', '.join(x.dropna().astype(str).unique())),
+    payment_method = ("payment_method", lambda x: ', '.join(str(v) for v in x.dropna().unique() if str(v) != 'nan')),
     total_payment  = ("payment_value", "sum")
 )
-assert payments_agg["order_id"].is_unique, "Lỗi: payments_agg bị duplicate order_id!"
+
+# Validate uniqueness after aggregation
+payment_duplicates = payments_agg["order_id"].duplicated().sum()
+if payment_duplicates > 0:
+    print(f"      ⚠️ Still have {payment_duplicates} duplicate order_ids in payments_agg")
+    payments_agg = payments_agg.drop_duplicates(subset=["order_id"], keep='first')
 
 # Gom nhóm shipments tránh đẻ dòng
 shipments_agg = (
@@ -91,7 +156,12 @@ shipments_agg = (
         shipping_fee   = ("shipping_fee", "sum")
     )
 )
-assert shipments_agg["order_id"].is_unique, "Lỗi: shipments_agg bị duplicate order_id!"
+
+# Validate uniqueness after aggregation
+shipment_duplicates = shipments_agg["order_id"].duplicated().sum()
+if shipment_duplicates > 0:
+    print(f"      ⚠️ Still have {shipment_duplicates} duplicate order_ids in shipments_agg")
+    shipments_agg = shipments_agg.drop_duplicates(subset=["order_id"], keep='first')
 
 # Aggregate returns → grain (order_id, product_id)
 returns_agg = (
@@ -114,19 +184,43 @@ reviews_agg = (
     .agg(
         review_date  = ("review_date",  "first"),
         rating       = ("rating",       "mean"),
-        review_title = ("review_title", lambda x: ', '.join(x.dropna().astype(str).unique())),
+        review_title = ("review_title", lambda x: ', '.join(str(v) for v in x.dropna().unique() if str(v) != 'nan')),
     )
 )
-assert reviews_agg.duplicated(subset=["order_id", "product_id"]).sum() == 0, "Lỗi: reviews_agg bị duplicate grain!"
+
+# Validate grain uniqueness
+review_duplicates = reviews_agg.duplicated(subset=["order_id", "product_id"]).sum()
+if review_duplicates > 0:
+    print(f"      ⚠️ Found {review_duplicates} duplicate (order_id, product_id) in reviews_agg")
+    reviews_agg = reviews_agg.drop_duplicates(subset=["order_id", "product_id"], keep='first')
 
 # Build fact_transactions
-fact_transactions = (
-    order_items
-    .merge(orders[['order_id', 'customer_id', 'order_date']], on="order_id", how="left") # Thêm dòng này cực quan trọng
-    .merge(payments_agg,   on="order_id",              how="left")
-    .merge(shipments_agg,  on="order_id",              how="left")
-    .merge(returns_agg, on=["order_id", "product_id"], how="left")
-    .merge(reviews_agg, on=["order_id", "product_id"], how="left")
+fact_transactions = order_items.copy()
+
+# Merge với validation cho từng bước
+fact_transactions = safe_merge_with_validation(
+    fact_transactions, orders[['order_id', 'customer_id', 'order_date']], 
+    ["order_id"], how='left', table_name='orders'
+)
+
+fact_transactions = safe_merge_with_validation(
+    fact_transactions, payments_agg, 
+    ["order_id"], how='left', table_name='payments'
+)
+
+fact_transactions = safe_merge_with_validation(
+    fact_transactions, shipments_agg, 
+    ["order_id"], how='left', table_name='shipments'
+)
+
+fact_transactions = safe_merge_with_validation(
+    fact_transactions, returns_agg, 
+    ["order_id", "product_id"], how='left', table_name='returns'
+)
+
+fact_transactions = safe_merge_with_validation(
+    fact_transactions, reviews_agg, 
+    ["order_id", "product_id"], how='left', table_name='reviews'
 )
 
 fact_transactions["is_returned"] = fact_transactions["is_returned"].fillna(0).astype(int)
@@ -154,6 +248,8 @@ web_traffic["Date"] = web_traffic["Date"].dt.normalize()
 # Aggregate web_traffic đề phòng 1 ngày có nhiều dòng (theo device/channel)
 metrics_cols = [col for col in web_traffic.select_dtypes(include='number').columns if not col.endswith('_id')]
 web_traffic_agg = web_traffic.groupby("Date", as_index=False)[metrics_cols].sum()
+
+print(f"      📊 Web traffic: {len(web_traffic)} → {len(web_traffic_agg)} days after aggregation")
 
 # Aggregate inventory → monthly grain
 inv_monthly = (
