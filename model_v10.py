@@ -58,7 +58,7 @@ def get_discount(ngay_check, df_promo):
 
     count_promo = 0
     sum_discount = 0
-    
+   
     for _, row in df_promo.iterrows():
         if row['odd'] == True and not is_odd_year: continue
 
@@ -66,7 +66,7 @@ def get_discount(ngay_check, df_promo):
         end = (row['end_date'].month, row['end_date'].day)
 
         is_in_range = False
-        
+       
         # Xử lý trường hợp vắt qua năm mới (vd: 25/12 - 05/01)
         if start <= end:
             if start <= curr <= end:
@@ -139,7 +139,7 @@ def build_features(df, promos):
 
     promo = templates[['promo_name', 'start_date', 'end_date', 'discount_value', 'odd']]
     df[['promo', 'discount']] = df['Date'].apply(lambda x: pd.Series(get_discount(x, promo)))
-    
+   
     return df
 
 
@@ -302,20 +302,33 @@ def make_submission(sales, promos, sample,
     else:
         te_df['COGS'] = cogs_independent
 
-    # Tính margin band từ train data theo từng tháng
-    monthly_margin = train_sub.copy()
-    monthly_margin['margin'] = monthly_margin['COGS'] / (monthly_margin['Revenue'] + 1e-6)
-    margin_bounds = monthly_margin.groupby('month')['margin'].quantile([0.05, 0.95]).unstack()
+    # Bước 1: Đo tỷ lệ thực từ train
+    n_inverted = (train_sub['COGS'] >= train_sub['Revenue']).sum()
+    pct_inverted = n_inverted / len(train_sub)
+    print(f"Train: {pct_inverted:.1%} ngày COGS >= Revenue")  # expect ~10%
 
-    # Áp lên test
+    # Bước 2: Học margin band — cho phép vượt 1.0
+    margin_bounds = (
+        train_sub.assign(margin = train_sub['COGS'] / (train_sub['Revenue'] + 1e-6))
+        .groupby('month')['margin']
+        .quantile([0.02, 0.98])
+        .unstack()
+    )
+
+    # Bước 3: Áp ràng buộc học từ data, không hardcode
     for m in range(1, 13):
         mask = te_df['month'] == m
-        lo = margin_bounds.loc[m, 0.05] if m in margin_bounds.index else 0.65
-        hi = margin_bounds.loc[m, 0.95] if m in margin_bounds.index else 0.93
+        lo = margin_bounds.loc[m, 0.02] if m in margin_bounds.index else 0.55
+        hi = margin_bounds.loc[m, 0.98] if m in margin_bounds.index else 1.10  # cho phép > 1
         te_df.loc[mask, 'COGS'] = te_df.loc[mask, 'COGS'].clip(
             te_df.loc[mask, 'Revenue'] * lo,
             te_df.loc[mask, 'Revenue'] * hi
         )
+
+    # Bước 4: Kiểm tra kết quả — tỷ lệ phải gần ~10%
+    n_test_inverted = (te_df['COGS'] >= te_df['Revenue']).sum()
+    print(f"Test:  {n_test_inverted/len(te_df):.1%} ngày COGS >= Revenue")
+    print(f"Chênh lệch so với train: {abs(n_test_inverted/len(te_df) - pct_inverted):.1%}")
 
     te_df['Revenue'] = te_df['Revenue'].clip(lower=0).round(2)
     te_df['COGS'] = te_df['COGS'].clip(lower=0).round(2)
@@ -326,7 +339,7 @@ def make_submission(sales, promos, sample,
     sub['Date'] = sub['Date'].dt.strftime('%Y-%m-%d')
 
     # Ghi file với tên mới là submission_v10.csv
-    fn = 'submission_k7.csv'
+    fn = 'submission_k10.csv'
     sub.to_csv(os.path.join(OUTPUT_DIR, fn), index=False)
 
     margin = ((sub.Revenue - sub.COGS) / sub.Revenue * 100)
